@@ -4,6 +4,7 @@
 //              Runtime Scrambler CLI options, and clean SIGINT handling.
 // ============================================================================
 
+#include "verilated.h"
 #include <iostream>
 #include <cstring>
 #include <cerrno>
@@ -18,7 +19,10 @@
 #include <linux/if_tun.h>
 
 #include "Vtop.h"
-#include "verilated.h"
+
+#ifdef TRACE_ENABLE
+#include "verilated_fst_c.h"
+#endif
 
 // Signal handling flag for Ctrl+C
 volatile bool g_stop_requested = false;
@@ -179,6 +183,13 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, handle_sigint);
 
     Vtop* top = new Vtop;
+    #ifdef TRACE_ENABLE
+        Verilated::traceEverOn(true);
+        VerilatedFstC* tfp = new VerilatedFstC;
+        top->trace(tfp, 99);
+        tfp->open("dump.fst");
+        vluint64_t trace_time = 0;
+    #endif
     TapPort tap_a;
     TapPort tap_b;
 
@@ -206,8 +217,19 @@ int main(int argc, char** argv) {
 
     // Reset Sequence
     top->clk = 0; top->rst_n = 0; top->eval();
+    #ifdef TRACE_ENABLE
+        tfp->dump(trace_time++);
+    #endif
+
     top->clk = 1; top->rst_n = 0; top->eval();
+    #ifdef TRACE_ENABLE
+        tfp->dump(trace_time++);
+    #endif
+
     top->clk = 0; top->rst_n = 1; top->eval();
+    #ifdef TRACE_ENABLE
+        tfp->dump(trace_time++);
+    #endif
 
     // Continuous Hardware Emulation Loop
     while (!Verilated::gotFinish() && !g_stop_requested) {
@@ -215,6 +237,9 @@ int main(int argc, char** argv) {
         top->enable_scrambler = enable_scrambler ? 1 : 0;
         top->eval();
 
+        #ifdef TRACE_ENABLE
+           tfp->dump(trace_time++);
+        #endif
         if (top->clk == 1) {
             // Node A Processing (tap0 <-> Host A RTL MAC)
             tap_a.process_tap_to_hw(top->a_tx_data, top->a_tx_keep, top->a_tx_valid, top->a_tx_last, top->a_tx_ready);
@@ -228,6 +253,10 @@ int main(int argc, char** argv) {
 
     std::cout << "\n[EMULATOR] Shutting down cleanly..." << std::endl;
     top->final();
+    #ifdef TRACE_ENABLE
+        tfp->close();
+        delete tfp;
+    #endif
     delete top;
     return 0;
 }

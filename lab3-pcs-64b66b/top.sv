@@ -410,7 +410,8 @@ module mac_tx #(
                     host_tx_ready <= 1'b1;
 
                     if (host_tx_valid && host_tx_ready) begin
-                        int b_cnt = count_bytes(host_tx_keep);
+                        int b_cnt;
+                        b_cnt = count_bytes(host_tx_keep);
                         /* verilator lint_off BLKSEQ */
                         for (int i = 0; i < 8; i++) begin
                             if (host_tx_keep[i]) pkt_buf[i] = host_tx_data[i*8 +: 8];
@@ -430,7 +431,8 @@ module mac_tx #(
                 ST_INGEST: begin
                     host_tx_ready <= 1'b1;
                     if (host_tx_valid && host_tx_ready) begin
-                        int b_cnt = count_bytes(host_tx_keep);
+                        int b_cnt;
+                        b_cnt = count_bytes(host_tx_keep);
                         /* verilator lint_off BLKSEQ */
                         for (int i = 0; i < 8; i++) begin
                             if (host_tx_keep[i]) pkt_buf[pkt_len + i] = host_tx_data[i*8 +: 8];
@@ -486,10 +488,12 @@ module mac_tx #(
                 end
 
                 ST_DATA: begin
-                    int rem_len = pkt_len - tx_pos;
+                    int rem_len;
+                    
                     logic [63:0] d_temp;
                     logic [7:0]  c_temp;
 
+                    rem_len = pkt_len - tx_pos;
                     host_tx_ready <= 1'b0;
 
                     if (rem_len >= 8) begin
@@ -599,12 +603,14 @@ module mac_rx #(
                         /* verilator lint_on BLKSEQ */
                         rx_len <= rx_len + 8;
                     end else begin
-                        int          valid_bytes = 0;
+                        int          valid_bytes;
+                        
                         int          total_rx;
                         logic [31:0] calc_crc;
                         logic [31:0] rx_crc;
                         logic [7:0]  full_pkt [0:2047];
 
+                        valid_bytes = 0;
                         for (int k = 0; k < rx_len; k++) full_pkt[k] = rx_buf[k];
 
                         /* verilator lint_off BLKSEQ */
@@ -657,11 +663,16 @@ module mac_rx #(
                 end
 
                 ST_OUTPUT: begin
-                    int rem_rx = rx_len - out_pos;
+                    int rem_rx;
+                    logic [63:0] d_rx_temp;
+                    logic [7:0]  k_rx_temp;
+                    rem_rx = rx_len - out_pos;
 
                     if (rem_rx > 8) begin
-                        logic [63:0] d_rx_temp = '0;
-                        logic [7:0]  k_rx_temp = 8'hFF;
+                        
+                        d_rx_temp = '0;
+                        
+                        k_rx_temp = 8'hFF;
                         for (int b = 0; b < 8; b++) d_rx_temp[b*8 +: 8] = rx_buf[out_pos + b];
                         host_rx_data  <= d_rx_temp;
                         host_rx_keep  <= k_rx_temp;
@@ -669,8 +680,10 @@ module mac_rx #(
                         host_rx_last  <= 1'b0;
                         out_pos       <= out_pos + 8;
                     end else if (rem_rx > 0) begin
-                        logic [63:0] d_rx_temp = '0;
-                        logic [7:0]  k_rx_temp = '0;
+                        
+                        d_rx_temp = '0;
+                        
+                        k_rx_temp = '0;
                         for (int b = 0; b < rem_rx; b++) begin
                             d_rx_temp[b*8 +: 8] = rx_buf[out_pos + b];
                             k_rx_temp[b]        = 1'b1;
