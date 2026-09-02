@@ -1,6 +1,7 @@
 // ============================================================================
 // File: wrapper.cpp
-// Description: Dual TAP Verilator Engine with FST Waveform Dumping
+// Description: Dual-Port TAP Verilator Testbench for Lab 4 (MLD Tagged 100G PCS)
+// Features: FST Waveform Dumping, Namespace Switching (ns_b), SIGINT Handling
 // ============================================================================
 
 #include <iostream>
@@ -18,7 +19,7 @@
 
 #include "Vtop.h"
 #include "verilated.h"
-#include "verilated_fst_c.h" // 1. Added FST Tracing Header
+#include "verilated_fst_c.h"
 
 // Signal handling flag for Ctrl+C
 volatile bool g_stop_requested = false;
@@ -44,6 +45,7 @@ public:
 
     TapPort() : tap_fd(-1), rx_pos(0), tx_len(0), tx_pos(0), sending(false) {}
 
+    // Bind TAP interface in the current execution context
     int init(const char* dev_name) {
         struct ifreq ifr;
         if ((tap_fd = open("/dev/net/tun", O_RDWR)) < 0) {
@@ -69,6 +71,7 @@ public:
         return 0;
     }
 
+    // Bind TAP interface inside a target network namespace (e.g., ns_b)
     int init_in_ns(const char* dev_name, const char* ns_name) {
         int old_ns_fd = open("/proc/self/ns/net", O_RDONLY);
         std::string ns_path = std::string("/var/run/netns/") + ns_name;
@@ -90,6 +93,7 @@ public:
 
         int status = init(dev_name);
 
+        // Restore default host namespace
         if (old_ns_fd >= 0) {
             setns(old_ns_fd, CLONE_NEWNET);
             close(old_ns_fd);
@@ -98,6 +102,7 @@ public:
         return status;
     }
 
+    // Process packets coming from Hardware MAC RX to Linux TAP
     void process_hw_to_tap(uint64_t data, uint8_t keep, uint8_t valid, uint8_t last) {
         if (!valid) return;
 
@@ -108,6 +113,7 @@ public:
         }
 
         if (last && rx_pos > 0) {
+            // Drop runt packets under 14 bytes to prevent TAP driver EIO errors
             if (rx_pos >= 14) {
                 ssize_t bytes_written = write(tap_fd, raw_rx_buf, rx_pos);
                 if (bytes_written < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -118,6 +124,7 @@ public:
         }
     }
 
+    // Ingest packets from Linux TAP into Hardware MAC TX
     void process_tap_to_hw(uint64_t &tx_data, uint8_t &tx_keep, uint8_t &tx_valid, uint8_t &tx_last, uint8_t tx_ready) {
         if (!sending) {
             tx_len = read(tap_fd, raw_tx_buf, sizeof(raw_tx_buf));
@@ -169,19 +176,19 @@ int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     std::signal(SIGINT, handle_sigint);
 
-    // 2. Turn on tracing before creating model
+    // Turn on Verilator tracing globally
     Verilated::traceEverOn(true);
 
     Vtop* top = new Vtop;
     TapPort tap_a;
     TapPort tap_b;
 
-    // 3. Initialize FST Trace Object
+    // Initialize FST Trace Object
     VerilatedFstC* tfp = new VerilatedFstC;
     top->trace(tfp, 99);
-    tfp->open("dump.fst"); // Output waveform file
+    tfp->open("dump.fst");
 
-    uint64_t main_time = 0; // Simulation timestamp counter
+    uint64_t main_time = 0;
 
     bool enable_scrambler = false;
     for (int i = 1; i < argc; i++) {
@@ -190,8 +197,9 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Bind tap0 in host namespace and tap1 in ns_b namespace
     if (tap_a.init("tap0") < 0 || tap_b.init_in_ns("tap1", "ns_b") < 0) {
-        std::cerr << "[EMULATOR FATAL] Failed to initialize TAP interfaces across namespaces." << std::endl;
+        std::cerr << "[EMULATOR FATAL] Failed to bind TAP interfaces across namespaces." << std::endl;
         tfp->close();
         delete tfp;
         delete top;
@@ -199,12 +207,12 @@ int main(int argc, char** argv) {
     }
 
     top->enable_scrambler = enable_scrambler ? 1 : 0;
+    top->a_rx_ready = 1;
+    top->b_rx_ready = 1;
 
     std::cout << "========================================================\n"
-              << "[EMULATOR] Dual TAP Node A (tap0) <-> Node B (ns_b/tap1) Active\n"
+              << "[EMULATOR] Lab 4 Dual TAP Node A (tap0) <-> Node B (ns_b/tap1) Active\n"
               << "[EMULATOR] Waveform Dumping: ACTIVE (dump.fst)\n"
-              << "[EMULATOR] Scrambler Status: " 
-              << (enable_scrambler ? "ENABLED" : "DISABLED") << "\n"
               << "[EMULATOR] Press Ctrl+C to stop simulation cleanly.\n"
               << "========================================================" << std::endl;
 
@@ -213,33 +221,34 @@ int main(int argc, char** argv) {
     top->clk = 1; top->rst_n = 0; top->eval(); tfp->dump(main_time++);
     top->clk = 0; top->rst_n = 1; top->eval(); tfp->dump(main_time++);
 
-    // Emulation Loop
+    // Continuous Hardware Emulation Loop
     while (!Verilated::gotFinish() && !g_stop_requested) {
         top->clk = !top->clk;
         top->enable_scrambler = enable_scrambler ? 1 : 0;
+        top->a_rx_ready = 1;
+        top->b_rx_ready = 1;
         top->eval();
 
         if (top->clk == 1) {
+            // Process Port A (tap0) transfers
             tap_a.process_tap_to_hw(top->a_tx_data, top->a_tx_keep, top->a_tx_valid, top->a_tx_last, top->a_tx_ready);
             tap_a.process_hw_to_tap(top->a_rx_data, top->a_rx_keep, top->a_rx_valid, top->a_rx_last);
 
+            // Process Port B (ns_b/tap1) transfers
             tap_b.process_tap_to_hw(top->b_tx_data, top->b_tx_keep, top->b_tx_valid, top->b_tx_last, top->b_tx_ready);
             tap_b.process_hw_to_tap(top->b_rx_data, top->b_rx_keep, top->b_rx_valid, top->b_rx_last);
         }
 
-        // 4. Dump waveform at every clock tick
         tfp->dump(main_time);
         main_time++;
     }
 
-    std::cout << "\n[EMULATOR] Flushing and closing waveform file..." << std::endl;
-
-    // 5. Clean Shutdown
+    std::cout << "\n[EMULATOR] Flushing waveform buffers..." << std::endl;
     top->final();
     tfp->close();
     delete tfp;
     delete top;
 
-    std::cout << "[EMULATOR] Waveform saved to dump.fst successfully." << std::endl;
+    std::cout << "[EMULATOR] Saved waveform to dump.fst successfully." << std::endl;
     return 0;
 }
